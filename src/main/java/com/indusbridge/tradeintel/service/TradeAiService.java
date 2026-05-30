@@ -30,22 +30,38 @@ public class TradeAiService {
     }
 
     // THIS IS THE NEW PRODUCTION METHOD
+ // THIS IS THE NEW PRODUCTION METHOD
     @Cacheable(value = "trade_insights_real", key = "#tradeData.hsCode + '-' + #userQuestion")
     public String analyzeRealData(TradeResponseDto tradeData, String userQuestion) {
         System.out.println(">>> AI ENGINE: Analyzing real market data for HS Code " + tradeData.getHsCode());
         
         try {
-            // Convert your giant Java object back into a tight JSON string so Gemini can read it
-            String rawJsonData = objectMapper.writeValueAsString(tradeData.getTopCountries());
+            // 1. Grab the 2-Year Country Data
+            String rawCountryData = objectMapper.writeValueAsString(tradeData.getTopCountries());
             
-            // Build the engineered prompt
-            String engineeredPrompt = "You are an expert global trade analyst for IndusBridge Global. " +
-                    "Analyze the following real export data for HS Code " + tradeData.getHsCode() + ". " +
-                    "The data is a JSON array of countries, showing previous year value, current year value, and growth percentage. " +
-                    "Here is the data: " + rawJsonData + ". " +
-                    "Based strictly on this data, answer the following question clearly and professionally: " + userQuestion;
+            // 2. Grab the 10-Year Historical Trend Data
+            String rawHistoricalData = "No history available";
+            if (tradeData.getHistoricalTrend() != null) {
+                rawHistoricalData = objectMapper.writeValueAsString(tradeData.getHistoricalTrend());
+            }
+            
+ 
+         // 3. Build the engineered prompt with Advanced AI Directives
+            String engineeredPrompt = 
+                "You are an elite Global Trade Analyst and Intelligence Copilot for IndusBridge Global. " +
+                "You are analyzing export data for HS Code " + tradeData.getHsCode() + ". " +
+                "Dataset 1 (10-Year Macro Trend): " + rawHistoricalData + ". " +
+                "Dataset 2 (Country Specific Performance, Prev vs Curr Year): " + rawCountryData + ". " +
+                
+                "CRITICAL DIRECTIVES: " +
+                "1. DO THE MATH: Never just repeat raw numbers. Calculate momentum, identify hidden anomalies, and spot concentration risks. " +
+                "2. SYNTHESIZE & DEDUCE: If the user asks a broad question, combine the 10-year macro trend with the 2-year country momentum to deduce the most strategic answer. " +
+                "3. FIND THE INVISIBLE: Point out if a country is buying at a historic discount, or if a macro trend signals an upcoming market shift. " +
+                "4. FORMATTING & TONE (CRITICAL): Keep answers brutally short, punchy, and highly informative. Absolutely no fluff, conversational filler, or long introductory/concluding paragraphs. Get straight to the point. Use bullet points and bold text for quick scannability. Deliver maximum intelligence in the fewest words possible. " +
+                
+                "User Query: " + userQuestion;
 
-            return callGemini(engineeredPrompt, ""); // Send to the helper method below
+            return callGemini(engineeredPrompt, ""); // Send to the helper method
             
         } catch (Exception e) {
             System.err.println("Failed to parse data for AI: " + e.getMessage());

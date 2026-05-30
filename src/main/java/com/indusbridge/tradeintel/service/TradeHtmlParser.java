@@ -1,6 +1,7 @@
 package com.indusbridge.tradeintel.service;
 
 import com.indusbridge.tradeintel.dto.CountryDataDto;
+import com.indusbridge.tradeintel.dto.HistoricalTrendDto;
 import com.indusbridge.tradeintel.dto.TradeResponseDto;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -10,6 +11,8 @@ import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.TreeMap;
 
 @Service
 public class TradeHtmlParser {
@@ -23,33 +26,110 @@ public class TradeHtmlParser {
             return response;
         }
 
+        // ---------------------------------------------------------
+        // HISTORICAL TREND AGGREGATION (Scans ALL pages for the Total row)
+        // ---------------------------------------------------------
+        Map<String, Double> historicalValues = new TreeMap<>();
+        Map<String, Double> historicalQtys = new TreeMap<>();
+
+        for (String html : rawHtmlPages) {
+            if (html == null || html.isEmpty()) continue;
+            try {
+                Document tempDoc = Jsoup.parse(html);
+                
+                // 1. Find the specific year labels dynamically from the table headers
+                Elements headers = tempDoc.select("thead tr th");
+                String prevYearLabel = "";
+                String currYearLabel = "";
+                
+                for (Element th : headers) {
+                    String txt = th.text().trim();
+                    if (txt.matches("\\d{4}-\\d{4}.*")) { // Matches "2024-2025"
+                        if (prevYearLabel.isEmpty()) {
+                            prevYearLabel = txt;
+                        } else if (currYearLabel.isEmpty()) {
+                            currYearLabel = txt;
+                        }
+                    }
+                }
+
+                // 2. Find the "Total" row to grab global aggregated data for those two years
+                Elements rows = tempDoc.select("table tr");
+                for (Element row : rows) {
+                    Elements cols = row.select("td");
+                    
+                    // The "Total" row uses colspan="2", making it the very first column (index 0)
+                    if (!cols.isEmpty() && cols.get(0).text().trim().equalsIgnoreCase("Total")) {
+                        
+                        if (!prevYearLabel.isEmpty()) {
+                            // Because of colspan, Prev Year Value is now at index 1 (not 2)
+                            historicalValues.put(prevYearLabel, parseSafeDouble(cols.get(1).text()));
+                            historicalQtys.put(prevYearLabel, parseSafeDouble(cols.get(4).text()));
+                        }
+                        if (!currYearLabel.isEmpty()) {
+                            // Curr Year Value is at index 2 (not 3)
+                            historicalValues.put(currYearLabel, parseSafeDouble(cols.get(2).text()));
+                            historicalQtys.put(currYearLabel, parseSafeDouble(cols.get(5).text()));
+                        }
+                        break; // Stop scanning rows once we find Total
+                    }
+                }
+            } catch (Exception e) {
+                System.err.println("Warning: Failed to parse historical page chunk.");
+            }
+        }
+
+        // 3. Package the 5 most recent years into the DTO
+        HistoricalTrendDto trend = new HistoricalTrendDto();
+        List<String> allYears = new ArrayList<>(historicalValues.keySet());
+//        int startIndex = Math.max(0, allYears.size() - 5); // Grab only the last 5 years
+        int startIndex = 0;
+        
+        for (int i = startIndex; i < allYears.size(); i++) {
+            String year = allYears.get(i);
+            trend.getLabels().add(year);
+            trend.getValue().add(historicalValues.get(year));
+            trend.getQuantity().add(historicalQtys.get(year));
+        }
+        response.setHistoricalTrend(trend);
+
+
+        // ---------------------------------------------------------
+        // CURRENT YEAR COUNTRY PARSING (Uses ONLY the most recent page)
+        // ---------------------------------------------------------
         String mostRecentHtml = rawHtmlPages.get(0); 
         
         try {
             Document doc = Jsoup.parse(mostRecentHtml);
             
-            // Attempt to grab the title
-            Element titleElement = doc.selectFirst("font[color=black]"); 
-            if (titleElement != null) {
-                response.setCommodityName(titleElement.text());
-            } else {
-                response.setCommodityName("Commodity Data");
+            // PIXEL-PERFECT COMMODITY EXTRACTION
+            String extractedName = "Commodity Data"; 
+            Elements paragraphs = doc.select("p"); 
+            
+            for (Element p : paragraphs) {
+                String text = p.text().trim(); 
+                if (text.toUpperCase().startsWith("COMMODITY")) {
+                    extractedName = text.replaceAll("(?i)Commodity\\s*:\\s*", "") 
+                                        .split("(?i)Unit")[0]                      
+                                        .split("(?i)Export")[0]                    
+                                        .replaceAll("[-:;]+$", "")                 
+                                        .trim();                                   
+                    break; 
+                }
             }
+            response.setCommodityName(extractedName);
 
-            // Grab all rows in the table
+            // DETAILED COUNTRY EXTRACTION
             Elements rows = doc.select("table tr");
             
             for (int i = 1; i < rows.size(); i++) {
                 Element row = rows.get(i);
-                
-                // Tradestat uses <td> for data. If it's a <th> header row, cols.size() will be 0.
                 Elements cols = row.select("td");
 
-                // We need at least 8 columns based on the image (S.No, Country, Val1, Val2, Val3, Qty1, Qty2, Qty3)
+                // Standard country rows have 8 columns
                 if (cols.size() >= 8) {
                     String countryName = cols.get(1).text().trim();
                     
-                    // CRITICAL TRAP AVOIDANCE: Stop parsing when we hit the summary rows at the bottom
                     if (countryName.equalsIgnoreCase("Total") || 
                         countryName.equalsIgnoreCase("India's Total") || 
                         countryName.equalsIgnoreCase("%Share")) {
@@ -60,12 +140,10 @@ public class TradeHtmlParser {
                     country.setCountryName(countryName);
                     
                     try {
-                        // Values in US $ Million (Indices 2, 3, 4)
                         country.setValuePreviousYear(parseSafeDouble(cols.get(2).text()));
                         country.setValueCurrentYear(parseSafeDouble(cols.get(3).text()));
                         country.setValueGrowthPercent(parseSafeDouble(cols.get(4).text()));
                         
-                        // Values in Quantity (Indices 5, 6, 7)
                         country.setQtyPreviousYear(parseSafeDouble(cols.get(5).text()));
                         country.setQtyCurrentYear(parseSafeDouble(cols.get(6).text()));
                         country.setQtyGrowthPercent(parseSafeDouble(cols.get(7).text()));
